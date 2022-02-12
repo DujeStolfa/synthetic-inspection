@@ -4,8 +4,11 @@ Train on the Gear dataset.
 
 """
 
+from fileinput import filename
 import os
 import sys
+import numpy as np
+import skimage.io
 
 # Root directory of the project
 ROOT_DIR = os.path.abspath("../../")
@@ -57,7 +60,26 @@ class GearDataset(utils.Dataset):
             subset: Subset to load: train or val
         """
 
-        pass
+        self.add_class("gear", 1, "defect")
+
+        assert subset in ["train", "val"]
+
+        # Split the data 
+        dataset_scenes = next(os.walk(dataset_dir))[1]
+        split = int(0.7 * len(dataset_scenes))
+        segment = dataset_scenes[:split] if subset == "train" else dataset_scenes[split:]
+
+        for scene in segment:
+            subpath = os.path.join(dataset_dir, scene, "normal")
+
+            for image in next(os.walk(subpath))[2]:
+                image_id = scene + "_" + image
+                image_path = os.path.join(subpath, image)
+                
+                self.add_image(
+                    "gear",
+                    image_id=image_id[:-4],
+                    path=image_path)
 
     def load_mask(self, image_id):
         """
@@ -69,12 +91,32 @@ class GearDataset(utils.Dataset):
             class_ids: a 1D array of class IDs of the instance masks.
         """
 
-        pass
+        info = self.image_info[image_id]
+        mask_dir = os.path.join(os.path.dirname(os.path.dirname(info['path'])), "mask")
+
+        filename = os.path.basename(info['path'])
+
+        mask = []
+        m = skimage.io.imread(os.path.join(mask_dir, filename)).astype(np.bool)
+        
+        # Remove color channels
+        m = np.delete(m, [1,2,3], 2)
+        m = np.squeeze(m, axis=2)
+        mask.append(m)
+
+        mask = np.stack(mask, axis=-1)
+
+        return mask, np.ones([mask.shape[-1]], dtype=np.int32)
 
     def image_reference(self, image_id):
         """ Return the path of an image """
         
-        pass
+        info = self.image_info[image_id]
+
+        if info["source"] == "gear":
+            return info["path"]
+        else:
+            super(self.__class__, self).image_reference(image_id)
 
 
 ############################################################
