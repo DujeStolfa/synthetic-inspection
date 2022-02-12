@@ -57,3 +57,6 @@ pip-delete-this-directory.txt
 .venv
 venv/
 ENV/
+
+# Specific files or repos
+tmp.py
