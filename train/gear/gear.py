@@ -9,6 +9,7 @@ import os
 import sys
 import numpy as np
 import skimage.io
+from imgaug import augmenters as iaa
 
 # Root directory of the project
 ROOT_DIR = os.path.abspath("../../")
@@ -20,6 +21,9 @@ from mrcnn import model as modellib, utils
 
 # Directory to save logs and model checkpoints.
 DEFAULT_LOGS_DIR = os.path.join(ROOT_DIR, "logs")
+
+# Path to trained weights file
+COCO_WEIGHTS_PATH = os.path.join(ROOT_DIR, "mask_rcnn_coco.h5")
 
 ############################################################
 #  Configurations
@@ -41,8 +45,34 @@ class GearConfig(Config):
     # Number of training steps per epoch
     STEPS_PER_EPOCH = 100
 
-    # Skip detections with < 90% confidence 
-    DETECTION_MIN_CONFIDENCE = 0.9
+    # Don't exclude based on confidence. 
+    DETECTION_MIN_CONFIDENCE = 0
+
+    # Backbone network architecture
+    # BACKBONE = "resnet50"
+
+    # Input image resizing
+    # Random crops of size 256x256
+    IMAGE_RESIZE_MODE = "crop"
+    IMAGE_MIN_DIM = 512
+    IMAGE_MAX_DIM = 512
+    IMAGE_MIN_SCALE = 2.0
+    
+    # Length of square anchor side in pixels
+    RPN_ANCHOR_SCALES = (8, 16, 32, 64, 128)
+
+
+class GearInferenceConfig(GearConfig):
+
+    # Run one image at a time
+    GPU_COUNT = 1
+    IMAGES_PER_GPU = 1
+
+    # Don't resize images
+    IMAGE_RESIZE_MODE = "pad64"
+
+    # Filter RPN proposals
+    RPN_NMS_THRESHOLD = 0.7
 
 
 ############################################################
@@ -66,7 +96,7 @@ class GearDataset(utils.Dataset):
 
         # Split the data 
         dataset_scenes = next(os.walk(dataset_dir))[1]
-        split = int(0.7 * len(dataset_scenes))
+        split = int(0.8 * len(dataset_scenes))
         segment = dataset_scenes[:split] if subset == "train" else dataset_scenes[split:]
 
         for scene in segment:
@@ -90,21 +120,22 @@ class GearDataset(utils.Dataset):
                 with one mask per instance.
             class_ids: a 1D array of class IDs of the instance masks.
         """
-
+        
         info = self.image_info[image_id]
         mask_dir = os.path.join(os.path.dirname(os.path.dirname(info['path'])), "mask")
-
+        
         filename = os.path.basename(info['path'])
 
-        mask = []
-        m = skimage.io.imread(os.path.join(mask_dir, filename)).astype(np.bool)
+        #mask = []
+        m = skimage.io.imread(os.path.join(mask_dir, filename)).astype(bool)
         
         # Remove color channels
         m = np.delete(m, [1,2,3], 2)
         m = np.squeeze(m, axis=2)
-        mask.append(m)
+        #mask.append(m)
+        #mask = [m]
 
-        mask = np.stack(mask, axis=-1)
+        mask = np.stack([m], axis=-1)
 
         return mask, np.ones([mask.shape[-1]], dtype=np.int32)
 
@@ -123,8 +154,52 @@ class GearDataset(utils.Dataset):
 #  Training
 ############################################################
 
-def train(model):
+def train(model, dataset_dir):
     """ Train the model """
+    
+    # Training dataset
+    dataset_train = GearDataset()
+    dataset_train.load_gear(dataset_dir, "train")
+    dataset_train.prepare()
+
+    # Validation dataset
+    dataset_val = GearDataset()
+    dataset_val.load_gear(dataset_dir, "val")
+    dataset_val.prepare()
+
+    # Image augmentation
+    augmentation = iaa.SomeOf((0, 2), [
+        iaa.Fliplr(0.5),
+        iaa.Flipud(0.5),
+        iaa.OneOf([iaa.Affine(rotate=90),
+                   iaa.Affine(rotate=180),
+                   iaa.Affine(rotate=270)]),
+        iaa.Multiply((0.8, 1.5)),
+        iaa.GaussianBlur(sigma=(0.0, 5.0))
+    ])
+
+    print("Train network heads")
+    model.train(dataset_train, dataset_val,
+                learning_rate=config.LEARNING_RATE,
+                epochs=30,
+                augmentation=augmentation,
+                layers='heads')
+
+    print("Train all layers")
+    model.train(dataset_train, dataset_val,
+                learning_rate=config.LEARNING_RATE,
+                epochs=100,
+                augmentation=augmentation,
+                layers='all')
+
+
+############################################################
+#  Detection
+############################################################
+
+def detect(model, dataset_dir):
+    """ Run detection on images in the given directory. """
+
     pass
 
 
@@ -133,19 +208,88 @@ def train(model):
 ############################################################
 
 if __name__  == '__main__':
+    import argparse
 
     # Parse commandline arguments
+    parser = argparse.ArgumentParser(
+        description='Mask R-CNN for defect segmentation')
+    parser.add_argument("command",
+                        metavar="<command>",
+                        help="'train' or 'detect'")
+    parser.add_argument('--dataset', required=False,
+                        metavar="/path/to/dataset/",
+                        help='Root directory of the dataset')
+    parser.add_argument('--weights', required=True,
+                        metavar="/path/to/weights.h5",
+                        help="Path to weights file, 'imagenet' or 'coco'")
+    parser.add_argument('--logs', required=False,
+                        default=DEFAULT_LOGS_DIR,
+                        metavar="/path/to/logs/",
+                        help='Logs and checkpoints directory (default=logs/)')
+    parser.add_argument('--subset', required=False,
+                        metavar="Dataset sub-directory",
+                        help="Subset of dataset to run prediction on") 
+    args = parser.parse_args()       
 
     # Validate arguments
+    if args.command == "train":
+        assert args.dataset, "Argument --dataset is required for training"
+    elif args.command == "detect":
+        assert args.subset, "Provide --subset to run prediction on"
+
+    print("Weights: ", args.weights)
+    print("Dataset: ", args.dataset)
+    if args.subset:
+        print("Subset: ", args.subset)
+    print("Logs: ", args.logs)
 
     # Configurations
+    if args.command == "train":
+        config = GearConfig()
+    else:
+        config = GearInferenceConfig()
+    config.display()
 
     # Create model
+    if args.command == "train":
+        model = modellib.MaskRCNN(mode="training", config=config,
+                                    model_dir=args.logs)
+    else:
+        model = modellib.MaskRCNN(mode="inference", config=config,
+                                    model_dir=args.logs)
 
     # Select weights file to load
+    if args.weights.lower() == "coco":
+        weights_path = COCO_WEIGHTS_PATH
+        # Download weights file
+        if not os.path.exists(weights_path):
+            utils.download_trained_weights(weights_path)
+    elif args.weights.lower() == "last":
+        # Find last trained weights
+        weights_path = model.find_last()
+    elif args.weights.lower() == "imagenet":
+        # Start from ImageNet trained weights
+        weights_path = model.get_imagenet_weights()
+    else:
+        weights_path = args.weights
 
     # Load weights
+    print("Loading weights ", weights_path)
+    if args.weights.lower() == "coco":
+        # Exclude the last layers because they require a matching
+        # number of classes
+        model.load_weights(weights_path, by_name=True, exclude=[
+            "mrcnn_class_logits", "mrcnn_bbox_fc",
+            "mrcnn_bbox", "mrcnn_mask"])
+    else:
+        model.load_weights(weights_path, by_name=True)
 
     # Train or evaluate
+    if args.command == "train":
+        train(model, args.dataset)
+    elif args.command == "detect":
+        detect(model, args.dataset)
+    else:
+        print("'{}' is not recognized. "
+              "Use 'train' or 'detect'".format(args.command))
 
-    pass
