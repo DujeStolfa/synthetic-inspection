@@ -104,15 +104,19 @@ class GearDataset(utils.Dataset):
 
         self.add_class("gear", 1, "defect")
 
-        assert subset in ["train", "val"]
+        assert subset in ["train", "val", "real"]
 
-        # Split the data 
         dataset_scenes = next(os.walk(dataset_dir))[1]
-        split = int(0.8 * len(dataset_scenes))
-        segment = dataset_scenes[:split] if subset == "train" else dataset_scenes[split:]
+        if subset != "real":
+            # Split the data
+            split = int(0.8 * len(dataset_scenes))
+            segment = dataset_scenes[:split] if subset == "train" else dataset_scenes[split:]
+        else:
+            # Get all data from the real dataset
+            segment = dataset_scenes
 
         for scene in segment:
-            subpath = os.path.join(dataset_dir, scene, "normal")
+            subpath = os.path.join(dataset_dir, scene, "normal" if subset != "real" else "")
 
             for image in next(os.walk(subpath))[2]:
                 image_id = scene + "_" + image
