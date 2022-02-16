@@ -4,6 +4,13 @@ Train on the Gear dataset.
 
 """
 
+if __name__ == '__main__':
+    import matplotlib
+    # Agg backend runs without a display
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+import datetime
 from fileinput import filename
 import os
 import sys
@@ -17,10 +24,15 @@ ROOT_DIR = os.path.abspath("../../")
 # Import Mask RCNN
 sys.path.append(ROOT_DIR)
 from mrcnn.config import Config
-from mrcnn import model as modellib, utils
+from mrcnn import model as modellib
+from mrcnn import utils
+from mrcnn import visualize
 
 # Directory to save logs and model checkpoints.
 DEFAULT_LOGS_DIR = os.path.join(ROOT_DIR, "logs")
+
+# Results directory
+RESULTS_DIR = os.path.join(ROOT_DIR, "results", "gear")
 
 # Path to trained weights file
 COCO_WEIGHTS_PATH = os.path.join(ROOT_DIR, "mask_rcnn_coco.h5")
@@ -46,7 +58,7 @@ class GearConfig(Config):
     STEPS_PER_EPOCH = 100
 
     # Don't exclude based on confidence. 
-    DETECTION_MIN_CONFIDENCE = 0
+    DETECTION_MIN_CONFIDENCE = 0.8
 
     # Backbone network architecture
     # BACKBONE = "resnet50"
@@ -197,10 +209,34 @@ def train(model, dataset_dir):
 #  Detection
 ############################################################
 
-def detect(model, dataset_dir):
+def detect(model, dataset_dir, subset):
     """ Run detection on images in the given directory. """
+    print("Running on {}".format(dataset_dir))
 
-    pass
+    # Create directory
+    if not os.path.exists(RESULTS_DIR):
+        os.makedirs(RESULTS_DIR)
+    submit_dir = "submit_{:%Y%m%dT%H%M%S}".format(datetime.datetime.now())
+    submit_dir = os.path.join(RESULTS_DIR, submit_dir)
+    os.makedirs(submit_dir)
+
+    # Read dataset
+    dataset = GearDataset()
+    dataset.load_gear(dataset_dir, subset)
+    dataset.prepare()
+
+    # Load over images
+    for image_id in dataset.image_ids:
+        image = dataset.load_image(image_id)
+        r = model.detect([image], verbose=0)[0]
+        
+        # Save image with masks
+        visualize.display_instances(
+            image, r['rois'], r['masks'], r['class_ids'],
+            dataset.class_names, r['scores'],
+            show_bbox=False, show_mask=False,
+            title="Predictions")
+        plt.savefig("{}/{}.png".format(submit_dir, dataset.image_info[image_id]["id"]))
 
 
 ############################################################
@@ -288,7 +324,7 @@ if __name__  == '__main__':
     if args.command == "train":
         train(model, args.dataset)
     elif args.command == "detect":
-        detect(model, args.dataset)
+        detect(model, args.dataset, args.subset)
     else:
         print("'{}' is not recognized. "
               "Use 'train' or 'detect'".format(args.command))
